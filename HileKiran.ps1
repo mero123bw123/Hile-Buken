@@ -55,7 +55,7 @@ public static class HkCon {
 '@ -Language CSharp -ErrorAction Stop
     [HkCon]::NoQuickEdit()
 } catch {}
-try { [Diagnostics.Process]::GetCurrentProcess().PriorityClass = [Diagnostics.ProcessPriorityClass]::AboveNormal } catch {}
+try { [Diagnostics.Process]::GetCurrentProcess().PriorityClass = [Diagnostics.ProcessPriorityClass]::BelowNormal } catch {}
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 try { $Host.UI.RawUI.WindowTitle = 'HileKiran' } catch {}
 Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
@@ -1940,7 +1940,7 @@ public static class HkHunt {
     $arcSorted = @($arcAll | Sort-Object @{ Expression = { if ($_.FullName -match '(?i)\\Users\\') { 0 } else { 1 } } }, Length | Select-Object -First 1000000)
     Log ('   ' + $arcAll.Count + ' jar/zip bulundu, ' + $arcSorted.Count + ' tanesi taranacak.') 'DarkGray'
     if ($script:jarCsOk) {
-        $thr = [Math]::Max(2, [Math]::Min(8, [Environment]::ProcessorCount))
+        $thr = [Math]::Max(2, [Math]::Min(4, [Math]::Max(2, [int]([Environment]::ProcessorCount / 2))))
         $chN = 0
         for ($ci = 0; $ci -lt $arcSorted.Count; $ci += 24) {
             Set-Frac ($ci / [Math]::Max(1, $arcSorted.Count)) ('jar/zip ' + $ci + '/' + $arcSorted.Count)
@@ -2782,7 +2782,7 @@ $mmPatSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComp
 foreach ($p in $mmPatList) { if ($p) { [void]$mmPatSet.Add($p) } }
 $mmPatSorted = @($mmPatSet | Sort-Object -Property { $_.Length } -Descending)
 $mmPatAlt = ($mmPatSorted | ForEach-Object { [regex]::Escape($_) }) -join '|'
-$script:MmPatRx = New-Object System.Text.RegularExpressions.Regex -ArgumentList ('(?<![A-Za-z])(' + $mmPatAlt + ')(?![A-Za-z])'), ([System.Text.RegularExpressions.RegexOptions]::Compiled)
+$script:MmPatRx = New-Object System.Text.RegularExpressions.Regex -ArgumentList ('(?<![A-Za-z])(' + $mmPatAlt + ')(?![A-Za-z])'), ([System.Text.RegularExpressions.RegexOptions]::None)
 
 # ---- class icerigi stringleri: hem duz hem tam genislikli (fullwidth) halleri aranir ----
 $mmBoth = @(
@@ -2833,7 +2833,7 @@ foreach ($s in $mmFwOnly) { [void]$mmStrSet.Add((ConvertTo-Fw $s)) }
 foreach ($s in $mmPlainExtra) { [void]$mmStrSet.Add($s) }
 $mmStrSorted = @($mmStrSet | Sort-Object -Property { $_.Length } -Descending)
 $mmStrAlt = ($mmStrSorted | ForEach-Object { [regex]::Escape($_) }) -join '|'
-$script:MmStrRx = New-Object System.Text.RegularExpressions.Regex -ArgumentList $mmStrAlt, ([System.Text.RegularExpressions.RegexOptions]::Compiled)
+$script:MmStrRx = New-Object System.Text.RegularExpressions.Regex -ArgumentList $mmStrAlt, ([System.Text.RegularExpressions.RegexOptions]::None)
 $script:MmFwRx = New-Object System.Text.RegularExpressions.Regex -ArgumentList '[\uFF21-\uFF3A\uFF41-\uFF5A\uFF10-\uFF19]{2,}', ([System.Text.RegularExpressions.RegexOptions]::Compiled)
 $script:MmFwPool = @($mmStrSet | Where-Object { $_ -cmatch '[\uFF21-\uFF3A\uFF41-\uFF5A\uFF10-\uFF19]' })
 
@@ -3190,6 +3190,44 @@ using System.Collections.Generic;
 using System.Net;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
+public sealed class HkTrie {
+    sealed class Node { public Dictionary<char, Node> Kids; public bool End; }
+    readonly Node root = new Node();
+    readonly bool[] first = new bool[65536];
+    readonly bool bounded;
+    static bool IsAlpha(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
+    public HkTrie(string[] words, bool bounded) {
+        this.bounded = bounded;
+        foreach (string w in words) {
+            if (string.IsNullOrEmpty(w)) continue;
+            Node nd = root;
+            foreach (char c in w) {
+                if (nd.Kids == null) nd.Kids = new Dictionary<char, Node>();
+                Node nx;
+                if (!nd.Kids.TryGetValue(c, out nx)) { nx = new Node(); nd.Kids[c] = nx; }
+                nd = nx;
+            }
+            nd.End = true;
+            first[w[0]] = true;
+        }
+    }
+    // Regex alternation ile ayni semantik: en soldan, en uzun eslesme, sinir kontrolu (lookbehind/lookahead) ile.
+    public void Collect(string text, HashSet<string> into) {
+        int n = text.Length, i = 0;
+        while (i < n) {
+            if (!first[text[i]]) { i++; continue; }
+            if (bounded && i > 0 && IsAlpha(text[i - 1])) { i++; continue; }
+            Node nd = root; int j = i, best = -1;
+            while (j < n) {
+                Node nx;
+                if (nd.Kids == null || !nd.Kids.TryGetValue(text[j], out nx)) break;
+                nd = nx; j++;
+                if (nd.End && (!bounded || j >= n || !IsAlpha(text[j]))) best = j;
+            }
+            if (best > 0) { into.Add(text.Substring(i, best - i)); i = best; } else i++;
+        }
+    }
+}
 public class HkMmRes {
     public string[] Patterns = new string[0];
     public string[] Strings = new string[0];
@@ -3212,6 +3250,7 @@ public static class HkMm {
     static Regex RxAlpha = new Regex(@"^[a-zA-Z]+$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     static Regex RxCluster = new Regex(@"[bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ]{3,}", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     static Dictionary<string, Regex> Cache = new Dictionary<string, Regex>();
+    static readonly Encoding Lat1 = Encoding.GetEncoding(28591);
     static string[] LegitIds = new string[] { "vmp-fabric","vmp","lithium","sodium","iris","fabric-api","modmenu","ferrite-core","lazydfu","starlight","entityculling","memoryleakfix","krypton","c2me-fabric","smoothboot-fabric","immediatelyfast","noisium","threadtweak" };
     static string[] Pfx = new string[] { "com_","org_","net_","io_","dev_","gs_","xyz_","app_","me_","tv_","uk_","be_","fr_","de_" };
     static string[] ObfNames = new string[] { "Skidfuscator","Paramorphism","Radon","Caesium","Bozar","Branchlock","Binscure","SuperBlaubeere","Qprotect","Zelix","Stringer","JNIC","Scuti","Smoke" };
@@ -3268,7 +3307,7 @@ public static class HkMm {
     static int Pct(int n, int total) { return (int)Math.Round(((double)n / total) * 100.0); }
     static string[] ToArr(HashSet<string> h) { string[] a = new string[h.Count]; h.CopyTo(a); return a; }
 
-    public static HkMmRes Scan(string path, Regex pat, Regex str, Regex fw, string[] fwPool) {
+    public static HkMmRes Scan(string path, HkTrie pat, HkTrie str, Regex fw, string[] fwPool) {
         HkMmRes r = new HkMmRes();
         ZipArchive zip = null;
         List<ZipArchive> inners = new List<ZipArchive>();
@@ -3318,7 +3357,7 @@ public static class HkMm {
             if (nested.Count == 1 && outerClasses < 3) bypass.Add("Hollow shell - only " + outerClasses + " own class(es), wraps: " + LastSeg(nested[0].FullName));
 
             // --- ad desenleri (tum girdiler) ---
-            foreach (ZipArchiveEntry e in entries) { foreach (Match m in pat.Matches(e.FullName)) pats.Add(m.Value); }
+            foreach (ZipArchiveEntry e in entries) { pat.Collect(e.FullName, pats); }
 
             bool rtExec = false, httpDl = false, httpExfil = false;
             int obfN = 0, numN = 0, uniN = 0, totN = 0;
@@ -3336,8 +3375,8 @@ public static class HkMm {
                 if (bytes != null) {
                     try {
                         string t = Encoding.UTF8.GetString(bytes);
-                        foreach (Match m in pat.Matches(t)) pats.Add(m.Value);
-                        foreach (Match m in str.Matches(t)) strs.Add(m.Value);
+                        pat.Collect(t, pats);
+                        str.Collect(t, strs);
                         foreach (Match m in fw.Matches(t)) fws.Add(m.Value);
                     } catch { }
                 }
@@ -3354,7 +3393,7 @@ public static class HkMm {
                 foreach (string sg in segs) { if (sg.Length == 1) { cons++; if (cons > maxC) maxC = cons; } else cons = 0; }
                 if (maxC >= 3) obfN++;
                 if (bytes != null && bytes.Length <= 2097152 && !(rtExec && httpDl && httpExfil)) {
-                    string ct = Encoding.GetEncoding(28591).GetString(bytes);
+                    string ct = Lat1.GetString(bytes);
                     if (!rtExec && ct.Contains("java/lang/Runtime") && ct.Contains("getRuntime") && ct.Contains("exec")) rtExec = true;
                     if (!httpDl && ct.Contains("openConnection") && ct.Contains("HttpURLConnection") && ct.Contains("FileOutputStream")) httpDl = true;
                     if (!httpExfil && ct.Contains("openConnection") && ct.Contains("setDoOutput") && ct.Contains("getOutputStream") && ct.Contains("getProperty")) httpExfil = true;
@@ -3458,15 +3497,19 @@ public static class HkMm {
         }
         return r;
     }
-    public static HkMmRes[] ScanMany(string[] paths, string patRx, string strRx, string fwRx, string[] fwPool, int threads) {
-        Regex pat = Get(patRx);
-        Regex str = Get(strRx);
+    public static HkMmRes[] ScanMany(string[] paths, string[] patList, string[] strList, string fwRx, string[] fwPool, int threads) {
+        HkTrie pat = new HkTrie(patList, true);
+        HkTrie str = new HkTrie(strList, false);
         Regex fw = Get(fwRx);
         HkMmRes[] res = new HkMmRes[paths.Length];
         ParallelOptions po = new ParallelOptions();
         po.MaxDegreeOfParallelism = threads;
         Parallel.For(0, paths.Length, po, delegate(int i) {
+            System.Threading.Thread th = System.Threading.Thread.CurrentThread;
+            System.Threading.ThreadPriority oldP = th.Priority;
+            try { th.Priority = System.Threading.ThreadPriority.BelowNormal; } catch { }
             try { res[i] = Scan(paths[i], pat, str, fw, fwPool); } catch { res[i] = new HkMmRes(); }
+            finally { try { th.Priority = oldP; } catch { } }
         });
         return res;
     }
@@ -3594,7 +3637,7 @@ $mmVerified = New-Object System.Collections.Generic.List[string]
 $mmUnknown = New-Object System.Collections.Generic.List[string]
 $mmCntSus = 0; $mmCntByp = 0; $mmCntObf = 0
 $mmWhite = @('viafabricplus', 'viafabricversion')
-$mmThr = [Math]::Max(2, [Math]::Min(8, [Environment]::ProcessorCount))
+$mmThr = [Math]::Max(2, [Math]::Min(4, [Math]::Max(2, [int]([Environment]::ProcessorCount / 2))))
 $mmPaths = [string[]]@($mmJars | ForEach-Object { $_.FullName })
 
 # 1) SHA1 (paralel)
@@ -3630,10 +3673,11 @@ if ($mmCsOk) {
         $hi = [Math]::Min($ci + 23, $mmSorted.Count - 1)
         $paths = [string[]]@($mmSorted[$ci..$hi] | ForEach-Object { $_.FullName })
         $res = $null
-        try { $res = [HkMm]::ScanMany($paths, $script:MmPatRx.ToString(), $script:MmStrRx.ToString(), $script:MmFwRx.ToString(), [string[]]@($script:MmFwPool), $mmThr) } catch {}
+        try { $res = [HkMm]::ScanMany($paths, [string[]]@($mmPatSorted), [string[]]@($mmStrSorted), $script:MmFwRx.ToString(), [string[]]@($script:MmFwPool), $mmThr) } catch {}
         if ($res) { for ($k = 0; $k -lt $paths.Count; $k++) { $mmScanRes[$paths[$k]] = $res[$k] } }
         $dn = [Math]::Min($ci + 24, $mmSorted.Count)
         Set-Frac (0.1 + 0.9 * $dn / [Math]::Max(1, $mmSorted.Count)) ('mod ' + $dn + '/' + $mmSorted.Count)
+        Start-Sleep -Milliseconds 120
         Write-Host ('   mod ilerleme: ' + $dn + '/' + $mmSorted.Count + ' (' + [int]$mmSw.Elapsed.TotalSeconds + ' sn)') -ForegroundColor DarkGray
     }
 }
@@ -6193,7 +6237,7 @@ if ($jarCsOk) {
     Write-Host ('   ' + $jarCands.Count + ' jar/zip dosyasi derlenmis hizli tarayici ile taraniyor (dosya basina en fazla 45 sn)...') -ForegroundColor DarkGray
     if ($jarCloud -gt 0) { Write-Host ('   ' + $jarCloud + ' bulut (OneDrive vb. indirilmemis) dosya atlandi: acilmasi dosyayi indirtir.') -ForegroundColor DarkYellow }
     $jarSw = [Diagnostics.Stopwatch]::StartNew()
-    $jarThreads = [Math]::Max(2, [Math]::Min(8, [Environment]::ProcessorCount))
+    $jarThreads = [Math]::Max(2, [Math]::Min(4, [Math]::Max(2, [int]([Environment]::ProcessorCount / 2))))
     for ($ci = 0; $ci -lt $jarCands.Count; $ci += 24) {
         $hi = [Math]::Min($ci + 23, $jarCands.Count - 1)
         $chunk = @($jarCands[$ci..$hi])
@@ -6708,7 +6752,7 @@ $cfIdx = 0
 $script:CfgSkipped = @()
 if ($binCsOk) {
     $cfPaths = [string[]]@($cfAll | ForEach-Object { $_.FullName })
-    $cfThr = [Math]::Max(2, [Math]::Min(8, [Environment]::ProcessorCount))
+    $cfThr = [Math]::Max(2, [Math]::Min(4, [Math]::Max(2, [int]([Environment]::ProcessorCount / 2))))
     for ($ci = 0; $ci -lt $cfPaths.Count; $ci += 64) {
         $hi = [Math]::Min($ci + 63, $cfPaths.Count - 1)
         $chunkP = [string[]]@($cfPaths[$ci..$hi])
